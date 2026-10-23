@@ -95,10 +95,11 @@ game feeds **raw, unlocked `mousemove` deltas** into the camera.
 902      float f3 = (float) this.mc.mouseHelper.deltaY * f1;   // pitch
 ```
 
-With the default sensitivity (0.5) `f1 == 1.0`, so one event carrying
-`movementX = 1000` turns the view 1000 degrees (spinning), and one event with
-`movementY = 1000` clamps pitch to ±90 (view locked fully up or fully down).
-That is exactly the reported symptom.
+With the default sensitivity (0.5) `f1 == 1.0`, and `Entity.setAngles` turns
+0.15 degrees per pixel. So one event carrying `movementX = 1000` turns the view
+150 degrees, and one with `movementY = 600` takes pitch from level to straight
+up or down (it clamps at ±90). A few of those in a row is a spin. That is
+exactly the reported symptom.
 
 ## Why the flag goes stale in normal play
 
@@ -115,63 +116,110 @@ pixels. The flag goes stale on the ordinary path:
 3. The game now believes it owns the mouse. The cursor is visible and free. The
    user moves it, the camera takes the raw deltas, and it snaps/spins.
 
-A second, related dead end: the engine's click-to-relock path
-(`platformInput.js:234`) only re-requests the lock **while `pointerLockFlag` is
-still true**. If the engine has already un-grabbed, clicking the canvas never
-gives mouse look back — the user has to alt-tab away and back.
+The engine's canvas `mousedown` handler (`platformInput.js:234`) re-requests the
+lock only while `pointerLockFlag` is still true, so in this stale state one click
+on the game hands the mouse back. In the other state, where the engine has
+already let go, a click in the world reaches `Minecraft.runTick`
+(`Minecraft.java:1387`), and that path grabs the mouse again too.
 
-## Fix, in the engine (two lines per target)
+## Two more ways the camera goes wild
 
-wasm-GC, `src/wasm-gc-teavm/js/platformInput.js:430`:
+The stale flag is not the whole story. After the first guard shipped, the camera
+still went "wacky, everywhere". Two more causes:
+
+### Movement piles up behind menus and gets spent in one frame
+
+`PointerInputAbstraction.runGameLoop()` adds every frame's `Mouse.getDX()` to
+`cursorDX`. Only `MouseHelper.mouseXYChange()` drains it, and that runs only
+from `EntityRenderer` when `inGameHasFocus && Display.isActive()`.
+`MouseHelper.grabMouseCursor()` zeroes its own `deltaX`, not `cursorDX`. So any
+movement the engine accepts while a screen is open, or while it holds a lock the
+game has not noticed yet, is kept, and the camera spends all of it in the first
+frame back in the world.
+
+One way in: the first guard kept its "the game wants the mouse" flag set after
+Esc, and its retry called the wrapped `requestPointerLock`, which reset the
+retry counter on every call. So it retried forever. Once the user clicked a
+pause-menu button (a user gesture), it could grab the lock *inside the pause
+menu*. The engine then took the movement, `GuiIngameMenu.updateScreen()` let go
+of the lock again, and the pile-up was spent on Back to Game.
+
+### Bogus single-event jumps under a real lock
+
+Chromium on Linux sometimes delivers one `mousemove` with a movement of
+hundreds of pixels while the pointer is locked. The first event after a lock
+engages can also carry the distance from where the cursor was. Nothing in the
+engine filters either.
+
+## Fix, in the engine
+
+Gate the movement where it enters the engine, and leave `isMouseGrabbed()`
+alone. `Minecraft.java:1247` opens the pause menu on any tick where
+`!Mouse.isMouseGrabbed()`, after a 6-tick grace period (`:1259`). So "fixing" the
+flag itself by clearing it on `pointerlockerror`, or by having
+`isMouseGrabbed()` read `document.pointerLockElement`, bounces the player back
+to the pause menu whenever a lock request is refused or slow. It also turns off
+the click-to-relock path at `platformInput.js:234`.
+
+wasm-GC, `src/wasm-gc-teavm/js/platformInput.js:257`, the canvas `mousemove`
+handler:
 
 ```js
-document.addEventListener("pointerlockerror", function (evt) {
-    pointerLockWaiting = false;
-    pointerLockFlag = false;        // the browser said no: stop believing otherwise
+const locked = (document.pointerLockElement === canvasElement);
+pushEvent(EVENT_TYPE_INPUT, EVENT_INPUT_MOUSE, {
+    ...
+    "movementX": locked ? evt.movementX : 0,
+    "movementY": locked ? evt.movementY : 0
 });
 ```
 
-and make the camera read the browser, not the flag —
-`src/wasm-gc-teavm/js/platformInput.js:709`:
+JS target, `src/teavm/java/net/lax1dude/eaglercraft/v1_8/internal/PlatformInput.java:370`:
+`if (pointerLockFlag && isPointerLockedImpl())`. Do not use
+`isPointerLocked()` here: it returns true while `pointerLockWaiting` is set,
+which is the "workaround for chrome bug" path.
 
-```js
-inputImports["isMouseGrabbed"] = function () {
-    return pointerLockFlag && document.pointerLockElement === canvasElement;
-};
-```
-
-JS target, `src/teavm/java/net/lax1dude/eaglercraft/v1_8/internal/PlatformInput.java:676`
-(add `pointerLockFlag = false;`) and `:1396`
-(`return pointerLockFlag && isPointerLocked();`).
+For the pile-up, zero `PointerInputAbstraction.cursorDX/DY` in
+`MouseHelper.grabMouseCursor()`. Spike filtering would need the same logic as
+the port's guard below.
 
 ## Fix without touching the engine (what the port does now)
 
 The engine is decompiled Minecraft and is not redistributed here, so the port
-layer fixes it from outside: **`web/app/mouselook.js`** (loaded from
+layer fixes all three from outside: **`web/app/mouselook.js`** (loaded from
 `web/index.html` before `boot.js`).
 
-1. A **capture-phase `mousemove` listener on the canvas container** — an
-   ancestor's capture listener always runs before the canvas's own listener —
-   shadows `movementX`/`movementY` to `0` on the event object whenever
-   `document.pointerLockElement !== canvas`. The engine then cannot feed
-   unlocked movement to the camera, whatever its flag says.
+1. A **capture-phase `mousemove` listener on the canvas container**. An
+   ancestor's capture listener always runs before the canvas's own listener, so
+   it can shadow `movementX`/`movementY` on the event object first. The engine
+   is handed movement only when all of these hold:
+   - the browser really holds the lock on the game canvas;
+   - the game is in the world with no screen open (from the engine's own
+     `screenChanged` hook), so nothing piles up behind a menu;
+   - the lock engaged more than 80 ms ago, and this is not the first event
+     after it engaged;
+   - the event is not a lone spike: more than 250 px *and* more than 8x the
+     recent average. A spike is held for one event. If the next one goes the
+     same way, it was the start of a real flick and both are handed over
+     together. Anything over 2500 px is always dropped.
 2. Wraps `Element.prototype.requestPointerLock` to learn when the game *wants*
-   the mouse, and re-requests it with a backoff (400 ms → 2 s, max 8 tries) when
-   the browser disagrees — that walks past Chrome's post-Esc penalty instead of
-   giving up.
-3. On a click on the canvas while the game is in-world with no GUI screen open,
-   it asks for the lock itself, which covers the "engine already un-grabbed, so
-   its own click-to-relock path never runs" dead end.
+   the mouse. If the browser refuses, it asks again with a backoff (250 ms to
+   2 s, max 8 tries) to get past Chrome's post-Esc penalty. It retries only
+   while the game is in the world, never behind a menu. Its own retries bypass
+   the wrapper, so they cannot reset the budget. When the browser drops the lock
+   (Esc, focus loss), the wish is cleared: the engine pauses by design.
+3. As a fallback, if a click on the game in the world has not produced a lock
+   request within 200 ms, it asks itself, still inside the click's user
+   activation.
 
-Measured with `node tools/mouselook.mjs wasm` (headless Brave, real pointer
-lock, real pointer-lock state):
+`window.mcMouseGuard.state()` counts what was passed, zeroed and dropped, and
+keeps the last few dropped spikes. It is posted with every telemetry stats
+record (`mouse` field), so a report of a wild camera comes with numbers.
 
-| step | result |
-|---|---|
-| in world, lock engaged | engine handed real deltas (5-6 px/step), view changed 60-84 % |
-| Esc -> pause menu -> Back to Game | lock re-engaged, `wantsGrab=true`, `pointerLocked=true` |
-| lock dropped underneath the game, mouse jumped across the window | engine handed `{x:0,y:0}`, view changed **0.0-3.1 %** |
-| click on the canvas afterwards | lock re-acquired, look works again |
+`node tools/mouselook.mjs wasm` (headless Brave, real pointer lock) walks
+these steps: enter the world, look, Esc then Back to Game, Back to Game with
+the browser refusing the lock (`mcMouseGuard.simulateRefusal(ms)`) while the
+mouse jumps around, a lone 900 px jump under a real lock, a real 1020 px flick,
+then a final look.
 
 Add `?noguard=1` to the URL to switch this file off and watch the same mouse
 movement drive the camera with the raw deltas (that is the A/B for the bug).

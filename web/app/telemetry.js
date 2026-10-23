@@ -75,6 +75,7 @@ window.mcTelemetry = (function () {
         jsHeapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
         uptimeMs: Math.round(performance.now() - t0),
         assets: window.mcAsset ? window.mcAsset.counters() : {},
+        mouse: window.mcMouseGuard ? window.mcMouseGuard.state() : null,
         events: this.events(),
         logTail: this.logTail(40)
       }, extra || {});

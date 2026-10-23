@@ -14,10 +14,12 @@
  *
  * This test walks the real user path and measures each step:
  *   1. enter a world            -> the game grabs the mouse, lock is on
- *   2. drop the lock underneath -> deltas must be zeroed for the engine, and
- *                                  the lock must come back without a click
+ *   2. look with the mouse      -> the engine must be handed real deltas
  *   3. Esc, Back to Game        -> the game lets go, then grabs again
- *   4. look with the mouse      -> the engine must be handed real deltas
+ *   4. Back to Game refused     -> deltas must be zeroed for the engine, and
+ *                                  the lock must come back without a click
+ *   5. a lone jump, a flick     -> the jump is dropped, the flick gets through
+ *   6. look again               -> mouse look still works
  */
 import { startServer, launch, activate, watchPage, sleep, waitFor, shot, report, imgdiff } from './harness.mjs';
 
@@ -185,12 +187,19 @@ try {
   if (!regained) problems.push('pointer lock never came back after Back to Game (' +
     JSON.stringify(L.errors.slice(-3)) + ', ' + g.relockTries + ' guard retries)');
 
-  // ---- 4. the browser drops the lock underneath the game ----
-  await page.evaluate('window.mcMouseGuard.simulateLostLock()');
-  await sleep(150);
+  // ---- 4. the refused re-lock: the exact state that spins the camera ----
+  // Esc again, make the browser refuse lock requests the way Chrome does right
+  // after Esc, and click Back to Game inside that window. The engine sets its
+  // grabbed flag, the request fails, and pointerlockerror leaves the flag set:
+  // the game is in the world, believes it owns the mouse, and the cursor is free.
+  await page.keyboard.press('Escape');
+  await sleep(2500);
+  await page.evaluate('window.mcMouseGuard.simulateRefusal(3000)');
+  await clickGUI(gcx(), geom.h / 4 + 18, 'Back to Game, with the browser refusing the lock');
   g = await guard();
-  mark('4. lock dropped on purpose: ' + JSON.stringify(g));
-  if (g.pointerLocked) problems.push('simulateLostLock failed to drop the lock');
+  mark('4. refused re-lock: screen=' + (await screenName()) + ' ' + JSON.stringify(g));
+  if (g.pointerLocked) problems.push('the simulated refusal did not keep the lock off');
+  if (!g.wantsGrab) problems.push('the guard did not notice the game asking for the mouse after Back to Game');
 
   // move the mouse the way a user does when the cursor is free: big jumps, and
   // each one reports a huge movement delta - exactly what spins the camera
@@ -200,13 +209,12 @@ try {
     await page.mouse.move(bb2.x + 25 + (i % 2) * (bb2.w - 50), bb2.y + 40 + i * 45);
     await sleep(70);
   }
-  await sleep(400);
+  await sleep(300);
   const frozen1 = await shot(page, 'mouselook-5-after-wild.png');
   const seen2 = await page.evaluate('window.__seen.slice(-60)');
   const unlocked = seen2.filter(m => !m.locked);
   g = await guard();
   mark('   deltas handed to the engine while unlocked: ' + JSON.stringify(unlocked.slice(0, 8)));
-  mark('   guard: ' + JSON.stringify(g));
   if (unlocked.some(m => m.x !== 0 || m.y !== 0))
     problems.push('the engine got non-zero movement deltas with no pointer lock: ' +
       JSON.stringify(unlocked.find(m => m.x !== 0 || m.y !== 0)));
@@ -215,21 +223,47 @@ try {
   mark('   view changed by ' + wild.toFixed(1) + '% while the mouse jumped around unlocked');
   if (wild > 25) problems.push('the camera still moved while the browser had no pointer lock (' + wild.toFixed(1) + '% of the view changed)');
 
-  // and the look still works after all of that
-  const bb3 = await box();
-  // one click on the game is enough to hand the mouse back
-  await page.mouse.move(bb3.x + bb3.w / 2, bb3.y + bb3.h / 2);
-  await page.mouse.down(); await sleep(180); await page.mouse.up();
+  // the guard keeps asking, so the lock comes back without another click
   let back = false;
-  for (let i = 0; i < 12 && !back; i++) { await sleep(500); back = (await guard()).pointerLocked; }
-  mark('   click gave the mouse back to the game=' + back + ' ' + JSON.stringify(await guard()));
-  if (!back) problems.push('a click on the game did not re-acquire pointer lock after the engine gave it up');
+  for (let i = 0; i < 16 && !back; i++) { await sleep(500); back = (await guard()).pointerLocked; }
+  g = await guard();
+  mark('   lock came back on its own=' + back + ' after ' + g.relockTries + ' guard retries');
+  if (!back) problems.push('pointer lock never came back after the refusal window (' + g.relockTries + ' guard retries)');
+
+  // ---- 5. a lone jump under a real lock, then a real flick ----
+  const bb3 = await box();
+  const sx = bb3.x + 60, sy = bb3.y + bb3.h / 2;
+  await page.mouse.move(sx, sy); await sleep(150);
+  for (let i = 1; i <= 10; i++) { await page.mouse.move(sx + i * 6, sy); await sleep(30); }
+  const spikes0 = (await guard()).spikesDropped;
+  await page.evaluate('window.__seen = []');
+  await page.mouse.move(sx + 60 + 900, sy); await sleep(30);      // the jump
+  for (let i = 1; i <= 10; i++) { await page.mouse.move(sx + 960 + i * 6, sy); await sleep(30); }
+  await sleep(200);
+  const seen3 = await page.evaluate('window.__seen.slice()');
+  g = await guard();
+  mark('5. lone 900 px jump: engine got ' + JSON.stringify(seen3.map(m => m.x)) + ' spikes dropped=' + (g.spikesDropped - spikes0));
+  if (seen3.some(m => Math.abs(m.x) > 300)) problems.push('a lone 900 px jump reached the engine');
+  if (g.spikesDropped <= spikes0) problems.push('the guard did not drop the lone jump');
+
+  const fx = bb3.x + 80;
+  await page.mouse.move(fx, sy); await sleep(300);
+  for (let i = 1; i <= 5; i++) { await page.mouse.move(fx + i * 4, sy); await sleep(30); }
+  await page.evaluate('window.__seen = []');
+  for (let i = 1; i <= 3; i++) { await page.mouse.move(fx + 20 + i * 260, sy); await sleep(40); }
+  for (let i = 1; i <= 3; i++) { await page.mouse.move(fx + 800 + i * 80, sy); await sleep(40); }
+  await sleep(200);
+  const flick = await page.evaluate('window.__seen.reduce((a, m) => a + m.x, 0)');
+  mark('   real flick of 1020 px: engine got ' + flick + ' px');
+  if (flick < 0.8 * 1020) problems.push('a real 1020 px flick was cut down to ' + flick + ' px');
+
+  // ---- 6. and the look still works after all of that ----
   const r0 = await shot(page, 'mouselook-6-relocked.png');
   for (let i = 0; i < 10; i++) { await page.mouse.move(bb3.x + bb3.w / 2 - (i + 1) * 30, bb3.y + bb3.h / 2 + i * 6, { steps: 5 }); await sleep(40); }
   await sleep(1200);
   const r1 = await shot(page, 'mouselook-7-looked-again.png');
   const d = await imgdiff(r0, r1);
-  mark('5. look after the lock came back changed the view by ' + d.toFixed(1) + '%');
+  mark('6. look after all of that changed the view by ' + d.toFixed(1) + '%');
   if (d < 15) problems.push('mouse look did not recover after the lock came back');
   await shot(page, 'mouselook-7-final.png');
 
