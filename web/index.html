@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>browser-minecraft: Minecraft 1.8.8 in WebAssembly</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%237a5b3a'/><rect x='2' y='2' width='12' height='12' fill='%235d8f3c'/><rect x='2' y='2' width='12' height='4' fill='%2371a94a'/></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#111; color:#ddd; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:10px; padding:14px; }
+  #bar { display:flex; gap:14px; flex-wrap:wrap; align-items:center; width:min(1180px,100%); }
+  #game { width:min(1180px,100%); height:min(68vh,760px); background:#000; position:relative; overflow:hidden;
+          border:1px solid #262626; }
+  #game canvas { display:block; }
+  #log { width:min(1180px,100%); white-space:pre-wrap; background:#0b0b0b; border:1px solid #262626;
+         padding:8px; max-height:30vh; overflow:auto; }
+  /* ?theater=1 - the port's fullscreen shell: the game owns the whole
+   * viewport and the page furniture goes away. It also gives the harness room
+   * for a long pointer-locked mouse sweep, which is the only way to get a big
+   * net movementY out of a cursor clamped to the viewport. */
+  body.theater #wrap { padding:0; gap:0; }
+  body.theater #log, body.theater small, body.theater #bar, body.theater h1 { display:none; }
+  body.theater #game { width:100vw; height:100vh; border:0; }
+  .k { color:#888; } .ok { color:#7bd88f; } .err { color:#ff7b72; } .dim { color:#666; }
+  progress { width:200px; }
+  h1 { font-size:15px; margin:4px 0; font-weight:600; }
+  small { color:#777; max-width:min(1180px,100%); }
+  code { color:#bbb; background:#1b1b1b; padding:1px 4px; border-radius:3px; }
+  #screenname { color:#c8a24a; }
+  #stage { color:#888; }
+</style>
+</head>
+<body>
+<div id=wrap>
+  <h1 id=title>browser-minecraft &middot; Minecraft 1.8.8 in WebAssembly</h1>
+  <div id=bar>
+    <span id=stage>boot</span>
+    <progress id=prog max=100 value=0 hidden></progress>
+    <span>screen: <span id=screenname>-</span></span>
+    <span id=stats class=dim></span>
+  </div>
+  <div id=game></div>
+  <div id=log></div>
+  <small>
+    Click the game once to start it (the engine waits for a real user gesture before it opens its audio
+    context), and again to grab the mouse. Keys: WASD move &middot; space jump &middot; shift sneak &middot;
+    mouse look &middot; left click break &middot; right click place &middot; middle click pick block &middot;
+    1-9 hotbar &middot; wheel cycle hotbar &middot; E inventory &middot; T chat &middot; F3 debug &middot;
+    Esc menu. Worlds are saved by the game itself into IndexedDB, so a reload resumes them.<br>
+    Query params: <code>?build=wasm|js</code> &middot; <code>?mode=files|epw</code> &middot;
+    <code>?server=ws://host/</code> &middot; <code>?lang=en_US</code> &middot; <code>?nocache=1</code> &middot;
+    <code>?opts=enforceVSync=1</code>
+  </small>
+</div>
+<script src="/app/assetcache.js"></script>
+<script src="/app/telemetry.js"></script>
+<script src="/app/boot.js"></script>
+</body>
+</html>

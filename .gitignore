@@ -1,0 +1,18 @@
+# the engine is not vendored
+
+# EaglercraftX is a decompiled, patched Minecraft. Mojang's EULA does not let
+# us hand you those sources, and GitHub mirrors of it are under a DMCA takedown
+# (HTTP 451). tools/get-engine.sh fetches a pinned revision from a GitFlic
+# mirror instead, so the engine never enters this repository.
+/engine/
+
+# puppeteer lives outside the repo (symlink to a shared install)
+/node_modules
+
+# the port's own telemetry log: written by the server, read by the tests
+/tools/telemetry.jsonl
+
+# screenshots: all but the two the README points at
+/shots/*
+!/shots/play-4-spawn.png
+!/shots/verify-wasm-files-1.png

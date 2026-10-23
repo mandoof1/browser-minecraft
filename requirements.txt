@@ -1,0 +1,3 @@
+# requirements.txt - nothing to install.
+# The server is python's http.server plus a few headers and a Range handler.
+# Render needs this file present to choose the Python runtime.

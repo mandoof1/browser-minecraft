@@ -1,0 +1,19 @@
+# Render blueprint. The server is part of the port, not decoration: the asset
+# streamer needs HTTP Range (206) answers, the OPFS cache and any future worker
+# split need a cross-origin-isolated origin (COOP/COEP), and /telemetry has to
+# be same-origin so a hosted port can report which build is actually running.
+# A static host can do none of those, so this is a web service.
+#
+# The compiled game is committed under web/build/ on purpose: the free build
+# box does not need a JDK 17 plus a gigabyte of Gradle cache to deploy a Java
+# game. Rebuild it locally with `bash build.sh` and commit the result.
+services:
+  - type: web
+    name: browser-minecraft
+    runtime: python
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    buildCommand: python3 tools/make-manifest.py
+    startCommand: python3 tools/serve.py
+    autoDeploy: true
